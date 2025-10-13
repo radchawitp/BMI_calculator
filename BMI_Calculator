@@ -2,15 +2,21 @@ import gradio as gr
 import pandas as pd
 import os
 from datetime import datetime
+import plotly.express as px
 
 USER_DATA_FILE = "user_data.csv"
 FOOD_DATA_FILE = "food_log.csv"
+BMR_TDEE_FILE = "bmr_tdee_log.csv"
 
 def init_csv_files():
     if not os.path.exists(USER_DATA_FILE):
         pd.DataFrame(columns=["Timestamp", "Name", "Age", "Height_cm", "Weight_kg", "BMI", "Category"]).to_csv(USER_DATA_FILE, index=False)
     if not os.path.exists(FOOD_DATA_FILE):
         pd.DataFrame(columns=["Timestamp", "Name", "Food_Item", "Calories"]).to_csv(FOOD_DATA_FILE, index=False)
+    if not os.path.exists(BMR_TDEE_FILE):
+        pd.DataFrame(columns=["Timestamp", "Name", "Age", "Gender", "Height_cm", "Weight_kg", "Activity_Level", "BMR", "TDEE"]).to_csv(BMR_TDEE_FILE, index=False)
+
+init_csv_files()
 
 def calculate_bmi(name, age, height_cm, weight_kg):
     try:
@@ -31,9 +37,17 @@ def calculate_bmi(name, age, height_cm, weight_kg):
                                  columns=["Timestamp", "Name", "Age", "Height_cm", "Weight_kg", "BMI", "Category"])
         new_entry.to_csv(USER_DATA_FILE, mode='a', header=False, index=False)
 
-        return f"{name}, your BMI is {bmi} ({category})"
+        bmi_logs = pd.read_csv(USER_DATA_FILE)
+        user_bmi_logs = bmi_logs[bmi_logs["Name"] == name]
+        if not user_bmi_logs.empty:
+            user_bmi_logs['Timestamp'] = pd.to_datetime(user_bmi_logs['Timestamp'])
+            fig = px.line(user_bmi_logs, x="Timestamp", y="BMI", title=f"{name}'s BMI Over Time", markers=True)
+        else:
+            fig = None
+
+        return f"{name}, your BMI is {bmi} ({category})", fig
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error: {str(e)}", None
 
 def log_food(name, food_item, calories):
     try:
@@ -41,28 +55,65 @@ def log_food(name, food_item, calories):
         new_food_entry = pd.DataFrame([[timestamp, name, food_item, calories]],
                                       columns=["Timestamp", "Name", "Food_Item", "Calories"])
         new_food_entry.to_csv(FOOD_DATA_FILE, mode='a', header=False, index=False)
-        return f"{food_item} ({calories} kcal) logged for {name}."
-    except Exception as e:
-        return f"Error: {str(e)}"
 
-def view_logs(name):
+        food_logs = pd.read_csv(FOOD_DATA_FILE)
+        user_food_logs = food_logs[food_logs["Name"] == name]
+        user_food_logs['Timestamp'] = pd.to_datetime(user_food_logs['Timestamp'])
+        today = datetime.now().date()
+        daily_total = user_food_logs[user_food_logs['Timestamp'].dt.date == today]['Calories'].sum()
+
+        fig = px.bar(user_food_logs, x="Timestamp", y="Calories", title=f"{name}'s Food Intake", labels={"Calories":"Calories"})
+
+        return f"{food_item} ({calories} kcal) logged for {name}. Today's total: {daily_total} kcal", fig
+    except Exception as e:
+        return f"Error: {str(e)}", None
+
+def view_logs_all():
     try:
         bmi_logs = pd.read_csv(USER_DATA_FILE)
         food_logs = pd.read_csv(FOOD_DATA_FILE)
+        bmr_logs = pd.read_csv(BMR_TDEE_FILE)
 
-        user_bmi_logs = bmi_logs[bmi_logs["Name"] == name]
-        user_food_logs = food_logs[food_logs["Name"] == name]
+        result = "---- All BMI Logs ----\n"
+        result += bmi_logs.to_string(index=False) if not bmi_logs.empty else "No BMI records found."
 
-        result = "---- BMI Logs ----\n"
-        result += user_bmi_logs.to_string(index=False)
-        result += "\n\n---- Food Logs ----\n"
-        result += user_food_logs.to_string(index=False)
+        result += "\n\n---- All Food Logs ----\n"
+        result += food_logs.to_string(index=False) if not food_logs.empty else "No food records found."
+
+        result += "\n\n---- All BMR & TDEE Logs ----\n"
+        result += bmr_logs.to_string(index=False) if not bmr_logs.empty else "No BMR/TDEE records found."
 
         return result
     except Exception as e:
         return f"Error reading logs: {str(e)}"
 
-init_csv_files()
+def calculate_bmr_tdee(name, age, gender, height_cm, weight_kg, activity_level):
+    try:
+        if gender.lower() == "male":
+            bmr = 88.362 + (13.397 * weight_kg) + (4.799 * height_cm) - (5.677 * age)
+        else:
+            bmr = 447.593 + (9.247 * weight_kg) + (3.098 * height_cm) - (4.330 * age)
+
+        activity_factors = {
+            "Sedentary": 1.2,
+            "Lightly active": 1.375,
+            "Moderately active": 1.55,
+            "Very active": 1.725,
+            "Extra active": 1.9
+        }
+        tdee = bmr * activity_factors.get(activity_level, 1.2)
+
+        timestamp = datetime.now().isoformat()
+        new_entry = pd.DataFrame([[timestamp, name, age, gender, height_cm, weight_kg, activity_level, round(bmr,2), round(tdee,2)]],
+                                 columns=["Timestamp", "Name", "Age", "Gender", "Height_cm", "Weight_kg", "Activity_Level", "BMR", "TDEE"])
+        new_entry.to_csv(BMR_TDEE_FILE, mode='a', header=False, index=False)
+
+        return (f"{name}'s BMR: {bmr:.1f} kcal\n"
+                f"TDEE (maintenance): {tdee:.1f} kcal\n"
+                f"Calories for weight loss: {tdee - 500:.1f} kcal\n"
+                f"Calories for weight gain: {tdee + 500:.1f} kcal")
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 with gr.Blocks(theme=gr.themes.Default(primary_hue="pink", secondary_hue="blue")) as iface:
     gr.Markdown("# 🧮 BMI & 🍎 Food Tracker")
@@ -74,29 +125,41 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="pink", secondary_hue="blue")
         weight = gr.Number(label="Weight (kg)")
         bmi_button = gr.Button("Calculate BMI")
         bmi_output = gr.Textbox(label="BMI Result")
-
+        bmi_chart = gr.Plot()
         bmi_button.click(fn=calculate_bmi,
                          inputs=[name, age, height, weight],
-                         outputs=bmi_output)
+                         outputs=[bmi_output, bmi_chart])
 
-    with gr.Tab("Log Food"):
+    with gr.Tab("Daily Metabolic Rate"):
         name2 = gr.Textbox(label="Name")
+        age2 = gr.Number(label="Age")
+        gender = gr.Radio(choices=["Male", "Female"], label="Gender")
+        height2 = gr.Number(label="Height (cm)")
+        weight2 = gr.Number(label="Weight (kg)")
+        activity = gr.Dropdown(choices=["Sedentary", "Lightly active", "Moderately active", "Very active", "Extra active"],
+                               label="Activity Level")
+        tdee_button = gr.Button("Calculate BMR & TDEE")
+        tdee_output = gr.Textbox(label="Results")
+        tdee_button.click(fn=calculate_bmr_tdee,
+                          inputs=[name2, age2, gender, height2, weight2, activity],
+                          outputs=tdee_output)
+
+    with gr.Tab("Food Tracker"):
+        name3 = gr.Textbox(label="Name")
         food = gr.Textbox(label="Food Item")
         calories = gr.Number(label="Calories")
         log_button = gr.Button("Log Food")
         log_output = gr.Textbox(label="Log Result")
-
+        food_chart = gr.Plot()
         log_button.click(fn=log_food,
-                         inputs=[name2, food, calories],
-                         outputs=log_output)
+                         inputs=[name3, food, calories],
+                         outputs=[log_output, food_chart])
 
     with gr.Tab("View Logs"):
-        name3 = gr.Textbox(label="Name")
-        view_button = gr.Button("View Logs")
-        logs_output = gr.Textbox(lines=20, label="Your Logs")
-
-        view_button.click(fn=view_logs,
-                          inputs=name3,
+        view_button = gr.Button("View All Logs")
+        logs_output = gr.Textbox(lines=25, label="All Logs")
+        view_button.click(fn=view_logs_all,
+                          inputs=None,
                           outputs=logs_output)
 
 iface.launch(share=True)
