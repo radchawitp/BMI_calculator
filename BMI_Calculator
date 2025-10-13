@@ -11,10 +11,10 @@ BMR_TDEE_FILE = "bmr_tdee_log.csv"
 def init_csv_files():
     if not os.path.exists(USER_DATA_FILE):
         pd.DataFrame(columns=["Timestamp", "Name", "Age", "Height_cm", "Weight_kg", "BMI", "Category"]).to_csv(USER_DATA_FILE, index=False)
-    if not os.path.exists(FOOD_DATA_FILE):
-        pd.DataFrame(columns=["Timestamp", "Name", "Food_Item", "Calories"]).to_csv(FOOD_DATA_FILE, index=False)
     if not os.path.exists(BMR_TDEE_FILE):
         pd.DataFrame(columns=["Timestamp", "Name", "Age", "Gender", "Height_cm", "Weight_kg", "Activity_Level", "BMR", "TDEE"]).to_csv(BMR_TDEE_FILE, index=False)
+    if not os.path.exists(FOOD_DATA_FILE):
+        pd.DataFrame(columns=["Timestamp", "Name", "Food_Item", "Calories"]).to_csv(FOOD_DATA_FILE, index=False)
 
 init_csv_files()
 
@@ -48,6 +48,34 @@ def calculate_bmi(name, age, height_cm, weight_kg):
         return f"{name}, your BMI is {bmi} ({category})", fig
     except Exception as e:
         return f"Error: {str(e)}", None
+
+def calculate_bmr_tdee(name, age, gender, height_cm, weight_kg, activity_level):
+    try:
+        if gender.lower() == "male":
+            bmr = 88.362 + (13.397 * weight_kg) + (4.799 * height_cm) - (5.677 * age)
+        else:
+            bmr = 447.593 + (9.247 * weight_kg) + (3.098 * height_cm) - (4.330 * age)
+
+        activity_factors = {
+            "Sedentary": 1.2,
+            "Lightly active": 1.375,
+            "Moderately active": 1.55,
+            "Very active": 1.725,
+            "Extra active": 1.9
+        }
+        tdee = bmr * activity_factors.get(activity_level, 1.2)
+
+        timestamp = datetime.now().isoformat()
+        new_entry = pd.DataFrame([[timestamp, name, age, gender, height_cm, weight_kg, activity_level, round(bmr,2), round(tdee,2)]],
+                                 columns=["Timestamp", "Name", "Age", "Gender", "Height_cm", "Weight_kg", "Activity_Level", "BMR", "TDEE"])
+        new_entry.to_csv(BMR_TDEE_FILE, mode='a', header=False, index=False)
+
+        return (f"{name}'s BMR: {bmr:.1f} kcal\n"
+                f"TDEE (maintenance): {tdee:.1f} kcal\n"
+                f"Calories for weight loss: {tdee - 500:.1f} kcal\n"
+                f"Calories for weight gain: {tdee + 500:.1f} kcal")
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 def log_food(name, food_item, calories):
     try:
@@ -86,34 +114,6 @@ def view_logs_all():
         return result
     except Exception as e:
         return f"Error reading logs: {str(e)}"
-
-def calculate_bmr_tdee(name, age, gender, height_cm, weight_kg, activity_level):
-    try:
-        if gender.lower() == "male":
-            bmr = 88.362 + (13.397 * weight_kg) + (4.799 * height_cm) - (5.677 * age)
-        else:
-            bmr = 447.593 + (9.247 * weight_kg) + (3.098 * height_cm) - (4.330 * age)
-
-        activity_factors = {
-            "Sedentary": 1.2,
-            "Lightly active": 1.375,
-            "Moderately active": 1.55,
-            "Very active": 1.725,
-            "Extra active": 1.9
-        }
-        tdee = bmr * activity_factors.get(activity_level, 1.2)
-
-        timestamp = datetime.now().isoformat()
-        new_entry = pd.DataFrame([[timestamp, name, age, gender, height_cm, weight_kg, activity_level, round(bmr,2), round(tdee,2)]],
-                                 columns=["Timestamp", "Name", "Age", "Gender", "Height_cm", "Weight_kg", "Activity_Level", "BMR", "TDEE"])
-        new_entry.to_csv(BMR_TDEE_FILE, mode='a', header=False, index=False)
-
-        return (f"{name}'s BMR: {bmr:.1f} kcal\n"
-                f"TDEE (maintenance): {tdee:.1f} kcal\n"
-                f"Calories for weight loss: {tdee - 500:.1f} kcal\n"
-                f"Calories for weight gain: {tdee + 500:.1f} kcal")
-    except Exception as e:
-        return f"Error: {str(e)}"
 
 with gr.Blocks(theme=gr.themes.Default(primary_hue="pink", secondary_hue="blue")) as iface:
     gr.Markdown("# 🧮 BMI & 🍎 Food Tracker")
