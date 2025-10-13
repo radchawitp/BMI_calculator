@@ -1,28 +1,18 @@
 import gradio as gr
-import pandas as pd
-import os
 from datetime import datetime
+import pandas as pd
 import plotly.express as px
 
-USER_DATA_FILE = "user_data.csv"
-FOOD_DATA_FILE = "food_log.csv"
-BMR_TDEE_FILE = "bmr_tdee_log.csv"
-
-def init_csv_files():
-    if not os.path.exists(USER_DATA_FILE):
-        pd.DataFrame(columns=["Timestamp", "Name", "Age", "Height_cm", "Weight_kg", "BMI", "Category"]).to_csv(USER_DATA_FILE, index=False)
-    if not os.path.exists(BMR_TDEE_FILE):
-        pd.DataFrame(columns=["Timestamp", "Name", "Age", "Gender", "Height_cm", "Weight_kg", "Activity_Level", "BMR", "TDEE"]).to_csv(BMR_TDEE_FILE, index=False)
-    if not os.path.exists(FOOD_DATA_FILE):
-        pd.DataFrame(columns=["Timestamp", "Name", "Food_Item", "Calories"]).to_csv(FOOD_DATA_FILE, index=False)
-
-init_csv_files()
-
-def calculate_bmi(name, age, height_cm, weight_kg):
+def calculate_bmi_units(name, age, height, weight, unit):
     try:
-        height_m = height_cm / 100
-        bmi = round(weight_kg / (height_m ** 2), 2)
+        if unit == "Imperial (in/lb)":
+            height_m = height * 0.0254
+            weight_kg = weight * 0.453592
+        else:
+            height_m = height / 100
+            weight_kg = weight
 
+        bmi = round(weight_kg / (height_m ** 2), 2)
         if bmi < 18.5:
             category = "Underweight"
         elif 18.5 <= bmi < 25:
@@ -33,19 +23,47 @@ def calculate_bmi(name, age, height_cm, weight_kg):
             category = "Obese"
 
         timestamp = datetime.now().isoformat()
-        new_entry = pd.DataFrame([[timestamp, name, age, height_cm, weight_kg, bmi, category]],
-                                 columns=["Timestamp", "Name", "Age", "Height_cm", "Weight_kg", "BMI", "Category"])
-        new_entry.to_csv(USER_DATA_FILE, mode='a', header=False, index=False)
 
-        bmi_logs = pd.read_csv(USER_DATA_FILE)
-        user_bmi_logs = bmi_logs[bmi_logs["Name"] == name]
-        if not user_bmi_logs.empty:
-            user_bmi_logs['Timestamp'] = pd.to_datetime(user_bmi_logs['Timestamp'])
-            fig = px.line(user_bmi_logs, x="Timestamp", y="BMI", title=f"{name}'s BMI Over Time", markers=True)
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO bmi_records (name, age, height_cm, weight_kg, bmi, category, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       (name, age, round(height_m*100,2), round(weight_kg,2), bmi, category, timestamp))
+        conn.commit()
+        conn.close()
+
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM bmi_records WHERE name=?", conn, params=(name,))
+        conn.close()
+        if not df.empty:
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            fig = px.line(df, x='timestamp', y='bmi', title=f"{name}'s BMI Over Time", markers=True)
         else:
             fig = None
 
         return f"{name}, your BMI is {bmi} ({category})", fig
+    except Exception as e:
+        return f"Error: {str(e)}", None
+
+def log_food(name, food_item, calories):
+    try:
+        timestamp = datetime.now().isoformat()
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO food_log (name, food_item, calories, timestamp) VALUES (?, ?, ?, ?)",
+                       (name, food_item, calories, timestamp))
+        conn.commit()
+        conn.close()
+
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM food_log WHERE name=?", conn, params=(name,))
+        conn.close()
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        today = datetime.now().date()
+        daily_total = df[df['timestamp'].dt.date == today]['calories'].sum()
+
+        fig = px.bar(df, x='timestamp', y='calories', title=f"{name}'s Food Intake", labels={'calories':'Calories'})
+
+        return f"{food_item} ({calories} kcal) logged for {name}. Today's total: {daily_total} kcal", fig
     except Exception as e:
         return f"Error: {str(e)}", None
 
@@ -66,9 +84,14 @@ def calculate_bmr_tdee(name, age, gender, height_cm, weight_kg, activity_level):
         tdee = bmr * activity_factors.get(activity_level, 1.2)
 
         timestamp = datetime.now().isoformat()
-        new_entry = pd.DataFrame([[timestamp, name, age, gender, height_cm, weight_kg, activity_level, round(bmr,2), round(tdee,2)]],
-                                 columns=["Timestamp", "Name", "Age", "Gender", "Height_cm", "Weight_kg", "Activity_Level", "BMR", "TDEE"])
-        new_entry.to_csv(BMR_TDEE_FILE, mode='a', header=False, index=False)
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""INSERT INTO bmr_tdee_log 
+                          (name, age, gender, height_cm, weight_kg, activity_level, bmr, tdee, timestamp)
+                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (name, age, gender, height_cm, weight_kg, activity_level, round(bmr,2), round(tdee,2), timestamp))
+        conn.commit()
+        conn.close()
 
         return (f"{name}'s BMR: {bmr:.1f} kcal\n"
                 f"TDEE (maintenance): {tdee:.1f} kcal\n"
@@ -77,57 +100,39 @@ def calculate_bmr_tdee(name, age, gender, height_cm, weight_kg, activity_level):
     except Exception as e:
         return f"Error: {str(e)}"
 
-def log_food(name, food_item, calories):
-    try:
-        timestamp = datetime.now().isoformat()
-        new_food_entry = pd.DataFrame([[timestamp, name, food_item, calories]],
-                                      columns=["Timestamp", "Name", "Food_Item", "Calories"])
-        new_food_entry.to_csv(FOOD_DATA_FILE, mode='a', header=False, index=False)
-
-        food_logs = pd.read_csv(FOOD_DATA_FILE)
-        user_food_logs = food_logs[food_logs["Name"] == name]
-        user_food_logs['Timestamp'] = pd.to_datetime(user_food_logs['Timestamp'])
-        today = datetime.now().date()
-        daily_total = user_food_logs[user_food_logs['Timestamp'].dt.date == today]['Calories'].sum()
-
-        fig = px.bar(user_food_logs, x="Timestamp", y="Calories", title=f"{name}'s Food Intake", labels={"Calories":"Calories"})
-
-        return f"{food_item} ({calories} kcal) logged for {name}. Today's total: {daily_total} kcal", fig
-    except Exception as e:
-        return f"Error: {str(e)}", None
-
 def view_logs_all():
     try:
-        bmi_logs = pd.read_csv(USER_DATA_FILE)
-        food_logs = pd.read_csv(FOOD_DATA_FILE)
-        bmr_logs = pd.read_csv(BMR_TDEE_FILE)
+        conn = sqlite3.connect(DB_FILE)
+        bmi_df = pd.read_sql_query("SELECT * FROM bmi_records", conn)
+        food_df = pd.read_sql_query("SELECT * FROM food_log", conn)
+        bmr_df = pd.read_sql_query("SELECT * FROM bmr_tdee_log", conn)
+        conn.close()
 
         result = "---- All BMI Logs ----\n"
-        result += bmi_logs.to_string(index=False) if not bmi_logs.empty else "No BMI records found."
-
+        result += bmi_df.to_string(index=False) if not bmi_df.empty else "No BMI records found."
         result += "\n\n---- All Food Logs ----\n"
-        result += food_logs.to_string(index=False) if not food_logs.empty else "No food records found."
-
-        result += "\n\n---- All BMR & TDEE Logs ----\n"
-        result += bmr_logs.to_string(index=False) if not bmr_logs.empty else "No BMR/TDEE records found."
+        result += food_df.to_string(index=False) if not food_df.empty else "No food records found."
+        result += "\n\n---- All BMR/TDEE Logs ----\n"
+        result += bmr_df.to_string(index=False) if not bmr_df.empty else "No BMR/TDEE records found."
 
         return result
     except Exception as e:
         return f"Error reading logs: {str(e)}"
 
 with gr.Blocks(theme=gr.themes.Default(primary_hue="pink", secondary_hue="blue")) as iface:
-    gr.Markdown("# 🧮 BMI & 🍎 Food Tracker")
+    gr.Markdown("# 🧮 BMI & 🍎 Food Tracker (SQLite Version)")
 
     with gr.Tab("Calculate BMI"):
         name = gr.Textbox(label="Name")
         age = gr.Number(label="Age", precision=0)
-        height = gr.Number(label="Height (cm)")
-        weight = gr.Number(label="Weight (kg)")
+        unit = gr.Radio(choices=["Metric (cm/kg)", "Imperial (in/lb)"], label="Units", value="Metric (cm/kg)")
+        height = gr.Number(label="Height")
+        weight = gr.Number(label="Weight")
         bmi_button = gr.Button("Calculate BMI")
         bmi_output = gr.Textbox(label="BMI Result")
         bmi_chart = gr.Plot()
-        bmi_button.click(fn=calculate_bmi,
-                         inputs=[name, age, height, weight],
+        bmi_button.click(fn=calculate_bmi_units,
+                         inputs=[name, age, height, weight, unit],
                          outputs=[bmi_output, bmi_chart])
 
     with gr.Tab("Daily Metabolic Rate"):
@@ -136,8 +141,7 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="pink", secondary_hue="blue")
         gender = gr.Radio(choices=["Male", "Female"], label="Gender")
         height2 = gr.Number(label="Height (cm)")
         weight2 = gr.Number(label="Weight (kg)")
-        activity = gr.Dropdown(choices=["Sedentary", "Lightly active", "Moderately active", "Very active", "Extra active"],
-                               label="Activity Level")
+        activity = gr.Dropdown(choices=["Sedentary", "Lightly active", "Moderately active", "Very active", "Extra active"], label="Activity Level")
         tdee_button = gr.Button("Calculate BMR & TDEE")
         tdee_output = gr.Textbox(label="Results")
         tdee_button.click(fn=calculate_bmr_tdee,
@@ -166,27 +170,51 @@ iface.launch(share=True)
 
 import sqlite3
 
-conn = sqlite3.connect("bmi.db")
-cursor = conn.cursor()
+DB_FILE = "BMI_Calculator.db"
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS bmi_records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    weight REAL,
-    height REAL,
-    bmi REAL,
-    category TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-conn.commit()
-conn.close()
-
-def get_history():
-    conn = sqlite3.connect("bmi.db")
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT weight, height, bmi, category, created_at FROM bmi_records ORDER BY created_at DESC LIMIT 10")
-    rows = cursor.fetchall()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS bmi_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        age INTEGER,
+        height_cm REAL,
+        weight_kg REAL,
+        bmi REAL,
+        category TEXT,
+        timestamp TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS food_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        food_item TEXT,
+        calories REAL,
+        timestamp TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS bmr_tdee_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        age INTEGER,
+        gender TEXT,
+        height_cm REAL,
+        weight_kg REAL,
+        activity_level TEXT,
+        bmr REAL,
+        tdee REAL,
+        timestamp TEXT
+    )
+    """)
+    
+    conn.commit()
     conn.close()
-    return rows
+
+init_db()
